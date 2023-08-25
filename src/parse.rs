@@ -1,56 +1,40 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use datafusion::arrow::array::{
-    Array, ArrayRef, AsArray, BooleanBuilder, FixedSizeListBuilder, PrimitiveArray,
-};
-use datafusion::arrow::datatypes::{DataType, Field, Int64Type};
+use datafusion::arrow::array::{Array, ArrayRef, AsArray, PrimitiveArray};
+use datafusion::arrow::datatypes::{DataType, Fields, Int64Type};
 use datafusion::common::cast::as_binary_array;
-use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::listing::{
-    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
-};
 use datafusion::logical_expr::Volatility;
 use datafusion::parquet::basic::Compression;
 use datafusion::parquet::file::properties::WriterProperties;
-// use datafusion::parquet::basic::{Compression, ZstdLevel};
-// use datafusion::parquet::file::properties::WriterProperties;
 use datafusion::physical_expr::functions::make_scalar_function;
-// use polars::prelude::*;
-use crate::cst_walker::walk_cst;
 use datafusion::prelude::*;
 use git2::Oid;
-use libcst_native::TokType;
-// use tokio_stream::StreamExt;
+use indicatif::ProgressIterator;
+use tracing::{debug, debug_span, info};
 
-pub async fn parse_python_files(directory: &Path, git_repo: PathBuf) {
-    let glob_expr = &format!("{}/*.parquet", directory.display());
-    let config = SessionConfig::from_env().unwrap(); //.with_batch_size(1000);
-    println!("Reading {} (batch size {})", glob_expr, config.batch_size());
+use crate::cst_walker::walk_cst;
+use crate::line_endings;
+use crate::stats::{Stats, ToStructArray};
+
+pub async fn parse_python_files(dataset: &Path, git_repo: PathBuf, limit: Option<usize>) {
+    let config = SessionConfig::from_env().unwrap();
+    let batch_size = config.batch_size();
+    info!("Reading {} (batch size {})", dataset.display(), batch_size);
 
     let ctx = SessionContext::with_config(config);
-
-    let session_state = ctx.state();
-    let table_path = ListingTableUrl::parse(directory.to_str().unwrap()).unwrap();
-    let file_format = ParquetFormat::new();
-    let listing_options =
-        ListingOptions::new(Arc::new(file_format)).with_file_extension(".parquet");
-    let resolved_schema = listing_options
-        .infer_schema(&session_state, &table_path)
+    let read_options = ParquetReadOptions::default().parquet_pruning(true);
+    ctx.register_parquet("input_dataset", dataset.to_str().unwrap(), read_options)
         .await
         .unwrap();
-    let config = ListingTableConfig::new(table_path)
-        .with_listing_options(listing_options)
-        .with_schema(resolved_schema);
-
-    let provider = Arc::new(ListingTable::try_new(config).unwrap());
-
-    ctx.register_table("input_dataset", provider).unwrap();
 
     let total_rows_result = ctx
         .sql("select count(*) as total from input_dataset")
         .await
+        .unwrap()
+        .limit(0, limit)
         .unwrap()
         .collect()
         .await
@@ -61,113 +45,64 @@ pub async fn parse_python_files(directory: &Path, git_repo: PathBuf) {
     // println!("{}", row.into_data());
     // 30,404,066
     // let total_rows = ctx.table(&provider).await.unwrap().count().await.unwrap();
-    println!("Total rows: {total_rows:?}");
+    info!("Total rows: {total_rows:?}");
+    let total_chunks = (total_rows / batch_size as i64) as usize;
 
-    let pbar = indicatif::ProgressBar::new(total_rows as u64);
-    pbar.set_style(
-        indicatif::ProgressStyle::with_template(
-            "Chunks: [{elapsed_precise}] [{bar:40.cyan/blue}] {per_sec} p/s ({pos}/{len}, ETA {eta})",
-        )
-            .unwrap(),
-    );
-    pbar.enable_steady_tick(Duration::from_secs(1));
+    let progress_bars = indicatif::MultiProgress::new();
 
-    // let x = DataType::FixedSizeList(Box::new(Field::new("results", DataType::Boolean, false)), 4);
-
-    let results_type = Arc::new(DataType::FixedSizeList(
-        Arc::new(Field::new("item", DataType::Boolean, true)),
-        4,
-    ));
-
-    // let struct_type = Arc::new(DataType::Struct(Fields::from(vec![
-    //     Field::new("has_async", DataType::Boolean, false),
-    //     Field::new("has_fstring", DataType::Boolean, false),
-    //     Field::new("has_walrus", DataType::Boolean, false),
-    //     Field::new("has_matrix", DataType::Boolean, false),
-    // ])));
+    let total_chunks_pbar = progress_bars.add(indicatif::ProgressBar::new(total_chunks as u64));
+    total_chunks_pbar.enable_steady_tick(Duration::from_secs(1));
 
     git2::opts::enable_caching(false);
     git2::opts::strict_hash_verification(false);
 
+    let output_fields = Stats::arrow_fields();
+    let struct_type = Arc::new(DataType::Struct(Fields::from(output_fields.clone())));
+
+    static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+
     ctx.register_udf(create_udf(
         "parse_python_file",
         vec![DataType::Binary],
-        results_type,
+        struct_type,
         Volatility::Immutable,
         make_scalar_function(move |args: &[ArrayRef]| {
             let repo = git2::Repository::open(git_repo.clone()).unwrap();
             let odb = repo.odb().unwrap();
 
             let arg0 = as_binary_array(&args[0]).unwrap();
-            let start_length = arg0.len();
-            let results = arg0.into_iter().map(|v| {
+
+            let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+
+            let pbar = progress_bars.add(indicatif::ProgressBar::new(arg0.len() as u64));
+            pbar.set_style(
+                indicatif::ProgressStyle::with_template(
+                    "{msg}: [{elapsed_precise}] [{bar:40.cyan/blue}] {per_sec} p/s ({pos}/{len}, ETA {eta})",
+                )
+                    .unwrap(),
+            );
+            pbar.enable_steady_tick(Duration::from_secs(1));
+            pbar.set_message(format!("Chunk {id}/{total_chunks}"));
+
+            let oid_debug: Vec<_> = arg0.iter().flatten().flat_map(|b| {
+                Oid::from_bytes(b)
+            }).map(|oid| oid.to_string()).collect();
+
+            info!("oids: {oid_debug:?}");
+
+            let results = arg0.into_iter().progress_with(pbar).map(|v| {
                 let oid = match v {
                     None => {
                         return None;
                     }
                     Some(v) => Oid::from_bytes(v).unwrap(),
                 };
-                let binding = odb.read(oid);
-                let data = match &binding {
-                    Ok(d) => d.data(),
-                    Err(_) => return None,
-                };
-                let string = match std::str::from_utf8(data) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        return None;
-                    }
-                };
-                let parsed = match libcst_native::parse_module(string, Some("utf-8")) {
-                    Ok(module) => {
-                        walk_cst(module);
-                    }
-                    Err(_) => {
-                        return None;
-                    }
-                };
-                // let iter = libcst_native::CheapTokenIterator::new(
-                //     string,
-                //     &libcst_native::TokConfig {
-                //         async_hacks: false,
-                //         split_fstring: true,
-                //     },
-                // );
-                // let items: Vec<_> = iter.collect();
-                // let has_async = items
-                //     .iter()
-                //     .any(|i| matches!(i, Ok((TokType::Async | TokType::Await, _))));
-                // let has_fstring = items
-                //     .iter()
-                //     .any(|i| matches!(i, Ok((TokType::FStringStart, _))));
-                // let has_walrus = items.iter().any(|i| matches!(i, Ok((TokType::Op, ":="))));
-                // let has_matrix = items.iter().any(|i| matches!(i, Ok((TokType::Op, "@"))));
-                Some([false, false, false, false])
+                debug!("Parsing {:?}", oid);
+                parse_oid(oid, &odb)
             });
-            let mut builder =
-                FixedSizeListBuilder::new(BooleanBuilder::with_capacity(start_length), 4);
-            for item in results {
-                match item {
-                    Some(v) => {
-                        builder.values().append_slice(&v);
-                        builder.append(true);
-                    }
-                    None => {
-                        builder.values().append_nulls(4);
-                        builder.append(true);
-                    }
-                }
-            }
-            let result = builder.finish();
-            pbar.inc(start_length as u64);
-            Ok(Arc::new(result) as ArrayRef)
-            // Ok(Arc::new(BooleanArray::from_iter(x)) as ArrayRef)
-            // unreachable!();
-            // let list_array = FixedSizeListArray::from_iter_primitive::<UInt8Type, _, _>(x, 4);
-
-            // let omg = FixedSizeListArray::from_iter_primitive::<BooleanType>(x, 4);
-            // Ok(list_array.slice(0, list_array.len()))
-            // Ok(FixedSizeListArray::from_iter_primitive([], x.len() as i32) as ArrayRef)
+            let results_vec: Vec<_> = results.collect();
+            total_chunks_pbar.inc(1);
+            Ok(Arc::new(results_vec.to_struct_array()))
         }),
     ));
 
@@ -179,35 +114,51 @@ pub async fn parse_python_files(directory: &Path, git_repo: PathBuf) {
     "#,
         )
         .await
+        .unwrap()
+        .limit(0, limit)
         .unwrap();
 
     let props = WriterProperties::builder()
         .set_compression(Compression::SNAPPY)
         .build();
     df.write_parquet("data/omg/", Some(props)).await.unwrap();
+}
 
-    //
-    // // let mut stream = df.execute_stream().await.unwrap();
-    // let mut streams = df.execute_stream_partitioned().await.unwrap();
-    // //
-    // let mut map = tokio_stream::StreamMap::new();
-    // for (idx, s) in streams.into_iter().enumerate() {
-    //     map.insert(idx, s);
-    // }
-    //
-    // while let Some((idx, res)) = map.next().await {
-    // // while let Some(res) = stream.next().await {
-    //     let total_rows = res.map(|item| item.num_rows()).unwrap_or(0);
-    //     pbar.inc(total_rows as u64);
-    //     // println!("GOT = {}", total_rows);
-    // }
-    // let batches = df.collect().await.unwrap();
-    // let output = pretty_format_batches(&batches).unwrap();
-    // println!("{}", output);
-    //
-    // let df = ctx.sql(include_str!("unique_files.sql")).await.unwrap();
-    //
-    // let props = WriterProperties::builder().set_compression(Compression::ZSTD(ZstdLevel::try_new(13).unwrap())).build();
-    //
-    // df.write_parquet(&format!("{}.parquet", output.join("done").display()), Some(props)).await.unwrap();
+#[tracing::instrument(skip(odb), level = "debug")]
+pub fn parse_oid(oid: Oid, odb: &git2::Odb) -> Option<Stats> {
+    // info!("Parsing {:?}", oid);
+    let binding = odb.read(oid);
+    let data = match &binding {
+        Ok(d) => d.data(),
+        Err(_e) => {
+            // info!("Failed to read from odb: {e}");
+            return None;
+        }
+    };
+    parse_data(data)
+}
+
+#[tracing::instrument(skip(data), level = "debug")]
+pub fn parse_data(data: &[u8]) -> Option<Stats> {
+    let normalized = line_endings::normalize(data);
+    let string = match std::str::from_utf8(&normalized) {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("Failed to decode content: {e}");
+            return None;
+        }
+    };
+    debug!("Normalized and parsed UTF-8, parsing module");
+
+    let result = debug_span!("parse_module").in_scope(|| libcst_native::parse_module(&string, Some("utf-8")));
+
+    match result {
+        Ok(module) => {
+            Some(walk_cst(module))
+        }
+        Err(e) => {
+            debug!("Failed to parse module: {e}");
+            None
+        }
+    }
 }

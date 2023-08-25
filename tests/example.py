@@ -1,2 +1,1 @@
-def lol():
-    pass
+print("lol %s %s" % (1, 2))
