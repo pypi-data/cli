@@ -53,11 +53,14 @@ enum Command {
     },
     ParseFile {},
     DebugAST {},
+    GetOid {
+        oid: String
+    }
 }
 
 fn main() -> anyhow::Result<()> {
     let runtime = Builder::new_multi_thread()
-        .thread_stack_size(25 * 1024 * 1024)
+        .thread_stack_size(100 * 1024 * 1024)
         .thread_name_fn(|| {
             static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
             let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
@@ -117,7 +120,7 @@ async fn run_main() -> anyhow::Result<()> {
             let contents = std::fs::read(contents).unwrap();
             let normalized = line_endings::normalize(&contents);
             let text = str::from_utf8(&normalized).unwrap();
-            let parsed = libcst_native::parse_module(&text, Some("utf-8")).unwrap();
+            let parsed = libcst_native::parse_module(text, Some("utf-8")).unwrap();
             println!("CST: {parsed:#?}");
             let stats = walk_cst(parsed);
             println!("Stats: {stats:#?}");
@@ -140,7 +143,7 @@ async fn run_main() -> anyhow::Result<()> {
                 let repo = git2::Repository::open(git_repo).unwrap();
                 let odb = repo.odb().unwrap();
                 let stats = parse_oid(oid, &odb);
-                println!("{stats:#?}");
+                // println!("{stats:#?}");
             }).await?;
         }
         Command::ParseFile {  } => {
@@ -155,8 +158,13 @@ async fn run_main() -> anyhow::Result<()> {
         Command::DebugAST {} => {
             let mut data = vec![];
             io::copy(&mut io::stdin().lock(), &mut data).unwrap();
-            let module = libcst_native::parse_module(&str::from_utf8(&data).unwrap(), Some("utf-8")).unwrap();
+            let module = libcst_native::parse_module(str::from_utf8(&data).unwrap(), None).unwrap();
             println!("{module:#?}");
+        }
+        Command::GetOid {oid} => {
+            let data: Vec<u8> = serde_json::from_str(&oid).unwrap();
+            let oid = git2::Oid::from_bytes(&data).unwrap();
+            println!("{oid}");
         }
     }
     Ok(())

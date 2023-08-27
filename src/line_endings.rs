@@ -2,7 +2,7 @@ use regex::bytes::Regex;
 use std::borrow::Cow;
 
 thread_local! {
-    pub static NEWLINE_PATTERN: Regex = Regex::new(r"\r\n").unwrap();
+    pub static NEWLINE_PATTERN: Regex = Regex::new(r"(\r\n|\r)").unwrap();
 }
 #[inline]
 pub fn normalize(item: &[u8]) -> Cow<[u8]> {

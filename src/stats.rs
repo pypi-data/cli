@@ -118,38 +118,5 @@ impl ToStructArray for Vec<Option<Stats>> {
         }
 
         builder.finish()
-        // let mut builder = StructBuilder::from_fields(fields, self.len());
-        // warn!("{:?} {}: {:?}", builder, fields_len, self.len());
-        // Convert ourselves into an array
-        // let slices = self
-        //     .into_iter()
-        //     .map(|item| item.map(|v| v.into_array()))
-        //     .collect_vec();
-        //
-        //
-        // for i in 0..fields_len {
-        //     let field_builder: &mut BooleanBuilder = builder.field_builder(i).unwrap();
-        //     // for item in &slices {
-        //     //     match item {
-        //     //         Some(v) => field_builder.append_value(v[i]),
-        //     //         None => field_builder.append_value(false),
-        //     //     }
-        //     // }
-        //     let values = slices
-        //         .iter()
-        //         .map(|item| match item {
-        //             Some(v) => v[i],
-        //             None => false,
-        //         })
-        //         .collect_vec();
-        //     field_builder.append_slice(&values);
-        //     // field_builder.finish();
-        //     warn!("{}: {:#?}", i, field_builder);
-        // }
-        // for _ in &slices {
-        //     builder.append(true);
-        // }
-        // warn!("Builder: {:#?}", builder);
-        // builder.finish()
     }
 }
