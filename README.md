@@ -2,7 +2,16 @@
 
 ## Installation
 
-Grab a copy of the compiled binary for your system from the latest GitHub release and download it
+Grab a copy of the compiled binary for your system from [the latest GitHub release](https://github.com/pypi-data/cli/releases/tag/latest) and download it.
+
+Then, grab a copy of some PyPI code. The tool will automate this in the future, but for now you could use the following:
+
+```bash
+git clone https://github.com/pypi-data/pypi-mirror-118/
+git clone https://github.com/pypi-data/pypi-mirror-119/
+git clone https://github.com/pypi-data/pypi-mirror-220/
+git clone https://github.com/pypi-data/pypi-mirror-221/
+```
 
 ## Usage
 
