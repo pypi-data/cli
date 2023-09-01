@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use std::borrow::Cow;
 use std::io::Write;
 use std::path::PathBuf;
@@ -24,7 +25,7 @@ pub struct Payload<'a> {
 pub struct OutputDriver {
     mode: OutputMode,
     buffer: Vec<u8>,
-    pub matches: usize
+    pub matches: usize,
 }
 
 impl OutputDriver {
@@ -37,7 +38,7 @@ impl OutputDriver {
         OutputDriver {
             mode,
             buffer: Vec::with_capacity(capacity),
-            matches: 0
+            matches: 0,
         }
     }
 
@@ -58,7 +59,14 @@ impl OutputDriver {
                 let second_component = &item.oid[3..=4];
                 let output_dir = dir.join(first_component).join(second_component);
                 std::fs::create_dir_all(&output_dir)?;
-                let mut file = std::fs::File::create(output_dir.join(item.oid))?;
+                let file_name = item
+                    .path
+                    .file_name()
+                    .ok_or_else(|| anyhow!("No file name"))?
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Invalid file name"))?;
+                let mut file =
+                    std::fs::File::create(output_dir.join(format!("{}.{}", item.oid, file_name)))?;
                 file.write_all(item.contents.as_bytes())?;
             }
         }

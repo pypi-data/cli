@@ -52,10 +52,7 @@ pub fn parse_files(
         let odb = repo.odb()?;
         let code_branch = repo.find_branch("origin/code", BranchType::Remote)?;
         let tree = code_branch.into_reference().peel_to_tree()?;
-        info!(
-            "{} Counting items in git...",
-            r.path().display()
-        );
+        info!("{} Counting items in git...", r.path().display());
         let mut total_items = 0;
         odb.foreach(|_item| {
             total_items += 1;
