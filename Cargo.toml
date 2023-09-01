@@ -13,7 +13,7 @@ tracing = {version = "0.1.37", features = ["release_max_level_info", "max_level_
 tracing-subscriber = {version = "0.3.17", default-features = false, features = ["std", "fmt", "parking_lot"]}
 #tracing-appender = "0.2.2"
 serde = { version = "1.0.188", features = ["derive"] }
-git2 = { version = "0.17.2", features = ["zlib-ng-compat"] }
+git2 = { version = "0.17.2", features = ["zlib-ng-compat", "vendored-libgit2"], default-features = false }
 rayon = "1.7.0"
 regex = "1.9.4"
 serde_json = "1.0.105"
