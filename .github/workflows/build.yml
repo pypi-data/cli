@@ -15,10 +15,10 @@ jobs:
         include:
           - os: ubuntu-latest
             bin: pypi-data
-            name: pypi-data-x86_64.tar.gz
+            name: pypi-data-linux-x86_64.tar.gz
           - os: macOS-latest
             bin: pypi-data
-            name: pypi-data-x86_64.tar.gz
+            name: pypi-data-macos-x86_64.tar.gz
           - os: windows-latest
             bin: pypi-data.exe
             name: pypi-data-Windows-x86_64.zip
