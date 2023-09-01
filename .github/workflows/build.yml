@@ -1,0 +1,97 @@
+on:
+  push:
+    branches:
+      - main
+
+name: Build
+
+jobs:
+  build_and_test:
+    name: Rust project
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+        include:
+          - os: ubuntu-latest
+            bin: pypi-data
+            name: pypi-data-x86_64.tar.gz
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - os: macOS-latest
+            bin: pypi-data
+            name: pypi-data-x86_64.tar.gz
+            container: null
+          - os: windows-latest
+            bin: pypi-data.exe
+            name: pypi-data-Windows-x86_64.zip
+            container: null
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: standard-build-${{ matrix.os }}-
+
+      - name: Run tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+
+      - name: Run
+        uses: actions-rs/cargo@v1
+        with:
+          command: run
+          args: -- --help
+
+      - name: Build release
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release
+      - name: Package
+        shell: bash
+        run: |
+          strip target/release/${{ matrix.bin }}
+          cd target/release
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]
+          then
+          7z a ../../${{ matrix.name }} ${{ matrix.bin }}
+          else
+          tar czvf ../../${{ matrix.name }} ${{ matrix.bin }}
+          fi
+          cd -
+      - name: Archive binaries
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-${{ matrix.name }}
+          path: ${{ matrix.name }}
+
+
+  create_release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs:
+      - cross_builds
+      - build_and_test
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v3
+      - uses: actions/download-artifact@v3
+      - name: Publish
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          files: |
+            **/*.tar.gz
+            **/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
