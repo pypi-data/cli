@@ -4,6 +4,7 @@ on:
       - main
 
 name: Build
+concurrency: build
 
 jobs:
   build_and_test:
