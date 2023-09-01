@@ -53,7 +53,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release
+          args: --profile=optimized
       - name: Package
         shell: bash
         run: |
