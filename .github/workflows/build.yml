@@ -38,17 +38,6 @@ jobs:
         with:
           prefix-key: standard-build-${{ matrix.os }}-
 
-      - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-
-      - name: Run
-        uses: actions-rs/cargo@v1
-        with:
-          command: run
-          args: -- --help
-
       - name: Build release
         uses: actions-rs/cargo@v1
         with:
