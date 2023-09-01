@@ -36,7 +36,7 @@ impl Stats {
             self.has_generator_expression,
             self.has_list_comp,
             self.has_dict_comp,
-            self.has_set_comp
+            self.has_set_comp,
         ]
     }
 

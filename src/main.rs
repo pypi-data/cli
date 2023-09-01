@@ -9,14 +9,14 @@ use tracing::{info, Level};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::util::SubscriberInitExt;
+
 use crate::cst_walker::walk_cst;
-use crate::parse::{parse_data, parse_oid};
+use crate::parse::{parse_data, parse_oid, ParseType};
 
 mod cst_walker;
 mod line_endings;
 mod parse;
 mod stats;
-
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -27,22 +27,28 @@ struct Args {
     #[arg(long)]
     log_dir: Option<PathBuf>,
 
-    #[arg(long, default_value="info")]
+    #[arg(long, default_value = "info")]
     log_level: Level,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    Update {
-        // #[arg(short, long)]
-        directory: PathBuf,
-    },
     Parse {
         contents: PathBuf,
     },
-    HandleFiles {
+    WalkCST {
         dataset: PathBuf,
         git_repo: PathBuf,
+
+        #[arg(short, long)]
+        limit: Option<usize>,
+    },
+    Grep {
+        dataset: PathBuf,
+        git_repo: PathBuf,
+
+        #[arg(short, long)]
+        pattern: String,
 
         #[arg(short, long)]
         limit: Option<usize>,
@@ -54,9 +60,10 @@ enum Command {
     ParseFile {},
     DebugAST {},
     GetOid {
-        oid: String
-    }
+        oid: String,
+    },
 }
+
 
 fn main() -> anyhow::Result<()> {
     let runtime = Builder::new_multi_thread()
@@ -75,18 +82,9 @@ fn main() -> anyhow::Result<()> {
 async fn run_main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    // let (non_blocking, _guard) = match args.log_dir {
-    //     None => tracing_appender::non_blocking(io::stdout()),
-    //     Some(dir) => {
-    //         if !dir.exists() {
-    //             std::fs::create_dir_all(&dir).unwrap();
-    //         }
-    //         let appender = tracing_appender::rolling::never(dir, "run.log");
-    //         tracing_appender::non_blocking(appender)
-    //         // BoxMakeWriter::new(appender)
-    //     }
-    // };
-    //
+    let x = tokio::runtime::Handle::try_current().unwrap();
+    // println!("{:?}", x.runtime_flavor());
+    // panic!();
     let non_blocking = match args.log_dir {
         None => BoxMakeWriter::new(io::stdout),
         Some(dir) => {
@@ -116,6 +114,23 @@ async fn run_main() -> anyhow::Result<()> {
     // tracing::subscriber::set_global_default(subscriber).unwrap();
 
     match args.command {
+        Command::WalkCST {
+            dataset,
+            git_repo,
+            limit,
+        } => {
+            crate::parse::parse_python_files(&dataset, git_repo, ParseType::CST, limit).await;
+        }
+        Command::Grep {
+            dataset,
+            git_repo,
+            pattern,
+            limit,
+        } => {
+            let pattern = regex::bytes::Regex::new(&pattern)?;
+            crate::parse::parse_python_files(&dataset, git_repo, ParseType::Regex(pattern), limit)
+                .await;
+        }
         Command::Parse { contents } => {
             let contents = std::fs::read(contents).unwrap();
             let normalized = line_endings::normalize(&contents);
@@ -125,35 +140,24 @@ async fn run_main() -> anyhow::Result<()> {
             let stats = walk_cst(parsed);
             println!("Stats: {stats:#?}");
         }
-        Command::Update { directory: _ } => {
-            // println!("Updating {}", directory.display());
-            // let mut repo = repos::init_repo(&directory);
-            // let _names = repos::set_upstreams(&mut repo);
-            // repos::fetch_trees(&mut repo);
-        }
-        Command::HandleFiles {
-            dataset,
-            git_repo,
-            limit,
-        } => {
-            crate::parse::parse_python_files(&dataset, git_repo, limit).await;
-        }
         Command::ParseOid { git_repo, oid } => {
             tokio::task::spawn_blocking(move || {
                 let repo = git2::Repository::open(git_repo).unwrap();
                 let odb = repo.odb().unwrap();
                 let stats = parse_oid(oid, &odb);
-                // println!("{stats:#?}");
-            }).await?;
+                println!("{stats:#?}");
+            })
+                .await?;
         }
-        Command::ParseFile {  } => {
+        Command::ParseFile {} => {
             tokio::task::spawn_blocking(move || {
                 let mut data = vec![];
                 io::copy(&mut io::stdin().lock(), &mut data).unwrap();
                 info!("Read {} bytes from stdin", data.len());
                 let stats = parse_data(&data);
                 println!("{stats:#?}");
-            }).await?;
+            })
+                .await?;
         }
         Command::DebugAST {} => {
             let mut data = vec![];
@@ -161,7 +165,7 @@ async fn run_main() -> anyhow::Result<()> {
             let module = libcst_native::parse_module(str::from_utf8(&data).unwrap(), None).unwrap();
             println!("{module:#?}");
         }
-        Command::GetOid {oid} => {
+        Command::GetOid { oid } => {
             let data: Vec<u8> = serde_json::from_str(&oid).unwrap();
             let oid = git2::Oid::from_bytes(&data).unwrap();
             println!("{oid}");
