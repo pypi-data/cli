@@ -52,6 +52,10 @@ pub fn parse_files(
         let odb = repo.odb()?;
         let code_branch = repo.find_branch("origin/code", BranchType::Remote)?;
         let tree = code_branch.into_reference().peel_to_tree()?;
+        info!(
+            "{} Counting items in git...",
+            r.path().display()
+        );
         let mut total_items = 0;
         odb.foreach(|_item| {
             total_items += 1;
@@ -60,12 +64,10 @@ pub fn parse_files(
 
         let mut output = OutputDriver::new(output.clone());
 
-        let fp_rate = 0.001;
-
-        let mut bloom = Bloom::new_for_fp_rate(total_items, fp_rate);
+        let mut bloom = Bloom::new_for_fp_rate(total_items, 0.001);
         info!(
-            "Total items: {total_items}. Bloom size: {} kb",
-            bloom.bitmap().len() / 1024
+            "{} Total items in git: {total_items}. Searching:",
+            r.path().display()
         );
 
         tree.walk(TreeWalkMode::PostOrder, |directory, entry| {
@@ -110,7 +112,7 @@ pub fn parse_files(
         })?;
         output.flush()?;
 
-        info!("Done {}", r.path().display());
+        info!("Done {}. {} matches", r.path().display(), output.matches);
         Ok::<(), anyhow::Error>(())
     })?;
     Ok(())

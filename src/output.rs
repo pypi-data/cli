@@ -24,6 +24,7 @@ pub struct Payload<'a> {
 pub struct OutputDriver {
     mode: OutputMode,
     buffer: Vec<u8>,
+    pub matches: usize
 }
 
 impl OutputDriver {
@@ -36,11 +37,13 @@ impl OutputDriver {
         OutputDriver {
             mode,
             buffer: Vec::with_capacity(capacity),
+            matches: 0
         }
     }
 
     #[inline(always)]
     pub fn push(&mut self, item: Payload) -> anyhow::Result<()> {
+        self.matches += 1;
         match &self.mode {
             OutputMode::Json => {
                 let json = serde_json::to_vec(&item)?;
